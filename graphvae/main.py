@@ -66,7 +66,7 @@ def build_model(args, hidden_dim=64, embed_dim=256):
     encoder = GraphEncoder(input_dim, hidden_dim, embed_dim).to(device)
     decoder = GraphDecoder(embed_dim, hidden_dim, args.max_num_nodes).to(device)
 
-    return GraphVAE(encoder, decoder, args.max_num_nodes).to(device)
+    return GraphVAE(encoder, decoder, embed_dim, args.max_num_nodes).to(device)
 
 
 def train(model, dataloader, args, epochs=5000):
@@ -94,18 +94,11 @@ def train(model, dataloader, args, epochs=5000):
             break
 
 
-def test(model, dataloader, args):
+def generate(model):
 
-    for batch_idx, data in enumerate(dataloader):
-
-        adj = data["adj"].float()
-        features = data["features"].float()
-
-        adj_recon = model.reconstruct(features, adj)
-
-        nx.draw(nx.from_numpy_matrix(np.rint(adj_recon.cpu().numpy())))
-        plt.show()
-        break
+    adj_recon = model.generate()
+    nx.draw(nx.from_numpy_matrix(np.rint(adj_recon.cpu().numpy())))
+    plt.show()
 
 
 def main():
@@ -128,8 +121,8 @@ def main():
     )
 
     model = build_model(args)
-    train(model, dataloader, args, epochs=1000)
-    test(model, dataloader, args)
+    train(model, dataloader, args, epochs=100)
+    generate(model)
 
 
 if __name__ == "__main__":

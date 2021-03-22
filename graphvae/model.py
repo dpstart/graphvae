@@ -22,13 +22,14 @@ class GraphConv(nn.Module):
 
 
 class GraphVAE(nn.Module):
-    def __init__(self, encoder, decoder, max_num_nodes):
+    def __init__(self, encoder, decoder, embed_dim, max_num_nodes):
 
         super(GraphVAE, self).__init__()
 
         self.encoder = encoder
         self.decoder = decoder
 
+        self.embed_dim = embed_dim
         self.max_num_nodes = max_num_nodes
 
     def edge_similarity_matrix(
@@ -87,12 +88,12 @@ class GraphVAE(nn.Module):
             x = x_new / norm
         return x
 
-    def reconstruct(self, x, adj):
+    def generate(self):
 
         """return only adjacency matrix for now."""
 
-        embed = self.encoder(x, adj)
-        out = self.decoder(embed, adj)
+        z = torch.autograd.Variable(torch.rand(self.embed_dim)).to(device)
+        out = self.decoder(z)
 
         recon_adj_lower = util.recover_adj_lower(out.cpu().data, self.max_num_nodes)
         recon_adj_tensor = util.recover_full_adj_from_lower(recon_adj_lower)
@@ -101,8 +102,13 @@ class GraphVAE(nn.Module):
 
     def forward(self, x, adj):
 
-        embed = self.encoder(x, adj)
-        out = self.decoder(embed, adj)
+        mu, sigma = self.encoder(x, adj)
+
+        sigma2 = sigma.mul(0.5).exp_()
+
+        eps = torch.autograd.Variable(torch.randn(sigma.size())).to(device)
+        z = eps * sigma2 + mu
+        out = self.decoder(z)
 
         recon_adj_lower = util.recover_adj_lower(out.cpu().data, self.max_num_nodes)
         recon_adj_tensor = util.recover_full_adj_from_lower(recon_adj_lower)
@@ -137,7 +143,13 @@ class GraphVAE(nn.Module):
             adj_vectorized, requires_grad=False
         ).to(device)
 
-        return util.adj_recon_loss(out[0], adj_vectorized_var)
+        adj_recon_loss = util.adj_recon_loss(out[0], adj_vectorized_var)
+        loss_kl = -0.5 * torch.sum(1 + sigma - mu.pow(2) - sigma.exp())
+        loss_kl /= self.max_num_nodes * self.max_num_nodes  # normalize
+
+        loss = adj_recon_loss + loss_kl
+
+        return loss
 
 
 class GraphEncoder(nn.Module):
@@ -145,6 +157,9 @@ class GraphEncoder(nn.Module):
         super(GraphEncoder, self).__init__()
         self.conv1 = GraphConv(input_dim=input_dim, output_dim=hidden_dim)
         self.conv2 = GraphConv(input_dim=hidden_dim, output_dim=embed_dim)
+
+        self.linear_mu = nn.Linear(embed_dim, embed_dim)
+        self.linear_sigma = nn.Linear(embed_dim, embed_dim)
 
         self.relu = nn.ReLU()
         for m in self.modules():
@@ -158,7 +173,13 @@ class GraphEncoder(nn.Module):
         x = self.relu(x)
         x = self.conv2(x, adj)
 
-        return torch.mean(x, 1)
+        # Using this to aggregate node info to graph info
+        x = torch.sum(x, 1)
+
+        mu = self.linear_mu(x)
+        sigma = self.linear_sigma(x)
+
+        return mu, sigma
 
 
 class GraphDecoder(nn.Module):
@@ -179,7 +200,7 @@ class GraphDecoder(nn.Module):
                     m.weight.data, gain=nn.init.calculate_gain("relu")
                 )
 
-    def forward(self, x, adj):
+    def forward(self, x):
 
         x = self.conv1(x)
         x = self.relu(x)
